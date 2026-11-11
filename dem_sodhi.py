@@ -159,6 +159,19 @@ def load_schedule(parameters: Parameters) -> list[float]:
     return schedule
 
 
+def plastic_collapse_load(parameters: Parameters) -> tuple[float, float]:
+    neutral_axis_depth = (
+        parameters.tensile_strength
+        * parameters.height
+        / (parameters.tensile_strength + parameters.compressive_strength)
+    )
+    plastic_moment = parameters.width / 2.0 * (
+        parameters.compressive_strength * neutral_axis_depth**2
+        + parameters.tensile_strength * (parameters.height - neutral_axis_depth) ** 2
+    )
+    return plastic_moment, 8.0 * plastic_moment / parameters.length
+
+
 def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object]:
     if min(parameters.length, parameters.height, parameters.width) <= 0.0:
         raise ValueError("Beam dimensions must be positive")
@@ -178,6 +191,7 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
     intact = [True] * len(springs)
     tensile_failed = [False] * len(springs)
     crushed = [False] * len(springs)
+    catastrophic_failed = [False] * len(springs)
     contact_active = [False] * len(springs)
     crush_contact_active = [False] * len(springs)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -187,6 +201,11 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
     max_compressive_stress = 0.0
     stabilizer = parameters.youngs_modulus * parameters.width * parameters.height * 1e-10
     schedule = load_schedule(parameters)
+    plastic_moment, collapse_load = plastic_collapse_load(parameters)
+    collapse_event: dict[str, float | int] | None = None
+    post_failure_steps = 50
+    catastrophic_failure = False
+    failed_interfaces: list[int] = []
 
     def extension(spring: Spring, values: list[float]) -> float:
         return sum(
@@ -196,10 +215,13 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
 
     def spring_is_active(index: int) -> bool:
         return (
-            not springs[index].is_fiber
-            or intact[index]
-            or (tensile_failed[index] and contact_active[index])
-            or (crushed[index] and crush_contact_active[index])
+            not catastrophic_failed[index]
+            and (
+                not springs[index].is_fiber
+                or intact[index]
+                or (tensile_failed[index] and contact_active[index])
+                or (crushed[index] and crush_contact_active[index])
+            )
         )
 
     def multiply(free_values: list[float]) -> list[float]:
@@ -225,14 +247,17 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
         for dof in fixed_dofs:
             displacement[dof] = 0.0
         reference = displacement[:]
-        for index in fiber_indices:
-            if crushed[index]:
-                crush_contact_active[index] = extension(springs[index], displacement) < 0.0
-            elif tensile_failed[index]:
-                contact_active[index] = extension(springs[index], displacement) < 0.0
-            else:
-                contact_active[index] = False
-                crush_contact_active[index] = False
+        if not catastrophic_failure:
+            for index in fiber_indices:
+                if catastrophic_failed[index]:
+                    continue
+                if crushed[index]:
+                    crush_contact_active[index] = extension(springs[index], displacement) < 0.0
+                elif tensile_failed[index]:
+                    contact_active[index] = extension(springs[index], displacement) < 0.0
+                else:
+                    contact_active[index] = False
+                    crush_contact_active[index] = False
 
         for _ in range(len(fiber_indices) + 10):
             diagonal = [stabilizer] * len(free_dofs)
@@ -262,19 +287,26 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                 -known_product[i] + stabilizer * reference[dof]
                 for i, dof in enumerate(free_dofs)
             ]
-            solution = conjugate_gradient(
-                multiply,
-                rhs,
-                diagonal,
-                [displacement[dof] for dof in free_dofs],
+            solution = (
+                [displacement[dof] for dof in free_dofs]
+                if catastrophic_failure
+                else conjugate_gradient(
+                    multiply,
+                    rhs,
+                    diagonal,
+                    [displacement[dof] for dof in free_dofs],
+                )
             )
             for dof, value in zip(free_dofs, solution):
                 displacement[dof] = value
 
+            if catastrophic_failure:
+                break
+
             broke_bond = False
             for index in fiber_indices:
                 spring = springs[index]
-                if crushed[index]:
+                if catastrophic_failed[index] or crushed[index]:
                     continue
                 bond_stress = spring.stiffness * extension(spring, displacement) / spring.area
                 if tensile_failed[index]:
@@ -327,6 +359,8 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
 
             contact_changed = False
             for index in fiber_indices:
+                if catastrophic_failed[index]:
+                    continue
                 if crushed[index]:
                     compressed = extension(springs[index], displacement) < 0.0
                     if compressed != crush_contact_active[index]:
@@ -354,16 +388,23 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                     if dof == punch_dof:
                         punch_force += force * coefficient
 
-        for index in fiber_indices:
-            if spring_is_active(index) and not crushed[index]:
-                stress = springs[index].stiffness * extension(springs[index], displacement) / springs[index].area
-                max_compressive_stress = max(max_compressive_stress, -stress)
+        if not catastrophic_failure:
+            for index in fiber_indices:
+                if spring_is_active(index) and not crushed[index]:
+                    stress = springs[index].stiffness * extension(springs[index], displacement) / springs[index].area
+                    max_compressive_stress = max(max_compressive_stress, -stress)
 
         history.append(
             {
                 "step": step,
                 "displacement_m": punch_displacement,
                 "force_N": abs(punch_force),
+                "collapse_limit_N": collapse_load,
+                "collapse_criterion_met": abs(punch_force) >= collapse_load,
+                "catastrophic_failure": catastrophic_failure,
+                "post_failure_iteration": (
+                    step - int(collapse_event["step"]) if collapse_event is not None else 0
+                ),
                 "broken_bonds": sum(tensile_failed[index] for index in fiber_indices),
                 "crushed_bonds": sum(crushed[index] for index in fiber_indices),
                 "active_contacts": sum(
@@ -398,7 +439,38 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                 )
                 stress = bond_stress
             stresses.append(stress)
+        if catastrophic_failure:
+            stresses = [0.0] * len(stresses)
         frames.append({"displacement": displacement[:], "states": states, "stresses": stresses})
+        if collapse_event is None and abs(punch_force) >= collapse_load:
+            collapse_event = {
+                "step": step,
+                "displacement_m": punch_displacement,
+                "reaction_N": abs(punch_force),
+                "limit_load_N": collapse_load,
+                "overshoot_percent": 100.0 * (abs(punch_force) / collapse_load - 1.0),
+            }
+            center_block = punch_dof // 3
+            failed_interfaces = [center_block - 1, center_block]
+            for index, spring in enumerate(springs):
+                interface = spring.dofs[0] // 3
+                if interface in failed_interfaces:
+                    catastrophic_failed[index] = True
+                    if spring.is_fiber:
+                        intact[index] = False
+                        tensile_failed[index] = True
+                        contact_active[index] = False
+                        crush_contact_active[index] = False
+            catastrophic_failure = True
+            post_failure_target = max(
+                parameters.max_displacement,
+                punch_displacement + 0.05 * parameters.height,
+            )
+            schedule[step:] = [
+                punch_displacement
+                + (post_failure_target - punch_displacement) * iteration / post_failure_steps
+                for iteration in range(1, post_failure_steps + 1)
+            ]
 
     csv_path = output_dir / "force_displacement.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as file:
@@ -431,9 +503,38 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
             "interfaces": parameters.blocks - 1,
             "dx_m": dx,
         },
+        "actual_steps": len(history),
         "first_tensile_crack": first_crack,
         "peak_force_N": float(peak["force_N"]),
         "peak_force_displacement_m": float(peak["displacement_m"]),
+        "plastic_collapse": {
+            "criterion": "first displacement-controlled reaction at or above the plastic limit load",
+            "neutral_axis_depth_m": (
+                parameters.tensile_strength
+                * parameters.height
+                / (parameters.tensile_strength + parameters.compressive_strength)
+            ),
+            "plastic_moment_Nm": plastic_moment,
+            "limit_load_N": collapse_load,
+            "event": collapse_event,
+            "post_failure": {
+                "model": "instantaneous severance of both interfaces adjacent to the punch block",
+                "severed_interfaces": failed_interfaces,
+                "continuation_steps": (
+                    max(0, len(history) - int(collapse_event["step"]))
+                    if collapse_event is not None
+                    else 0
+                ),
+                "final_reaction_N": float(history[-1]["force_N"]),
+                "reaction_reached_zero": bool(history[-1]["force_N"] == 0.0),
+            },
+            "assumptions": [
+                "rectangular section with uniform tensile and compressive strength blocks",
+                "zero axial resultant and three plastic hinges at both clamps and midspan",
+                "post-limit central separation is imposed instantaneously; no fragment dynamics are simulated",
+                "post-limit stress vectors are hidden because the dynamic release path is not modeled",
+            ],
+        },
         "post_crack_peak_force_N": max((float(row["force_N"]) for row in post_crack), default=0.0),
         "final_broken_bonds": int(history[-1]["broken_bonds"]),
         "final_active_compression_contacts": int(history[-1]["active_contacts"]),
@@ -452,24 +553,37 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
         ],
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    write_force_svg(history, output_dir / "force_displacement.svg")
+    write_force_svg(history, output_dir / "force_displacement.svg", collapse_load)
     write_crack_svg(springs, frames[-1]["states"], parameters, output_dir / "crack_state.svg")
     write_animation_html(
         springs,
         frames,
         history,
         parameters,
+        collapse_load,
+        post_failure_steps,
         output_dir / "beam_animation.html",
     )
     return summary
 
 
-def write_force_svg(history: list[dict[str, float | int]], path: Path) -> None:
+def write_force_svg(
+    history: list[dict[str, float | int]],
+    path: Path,
+    collapse_load: float,
+) -> None:
     width, height = 900, 520
     left, top, right, bottom = 85, 35, 30, 75
     plot_width, plot_height = width - left - right, height - top - bottom
     max_x = max(float(row["displacement_m"]) for row in history)
-    max_y = max(float(row["force_N"]) for row in history) or 1.0
+    max_y = max(max(float(row["force_N"]) for row in history), collapse_load) * 1.1
+    collapse_y = top + (1.0 - collapse_load / max_y) * plot_height
+    failure = next((row for row in history if row["collapse_criterion_met"]), None)
+    failure_x = (
+        left + float(failure["displacement_m"]) / max_x * plot_width
+        if failure is not None
+        else None
+    )
     points = " ".join(
         f"{left + float(row['displacement_m']) / max_x * plot_width:.2f},"
         f"{top + (1.0 - float(row['force_N']) / max_y) * plot_height:.2f}"
@@ -479,6 +593,9 @@ def write_force_svg(history: list[dict[str, float | int]], path: Path) -> None:
 <rect width="100%" height="100%" fill="white"/>
 <text x="{width / 2}" y="24" text-anchor="middle" font-family="sans-serif" font-size="18">Ice beam DEM: force-displacement</text>
 <path d="M {left} {top} V {top + plot_height} H {left + plot_width}" fill="none" stroke="#333" stroke-width="2"/>
+<line x1="{left}" y1="{collapse_y:.2f}" x2="{left + plot_width}" y2="{collapse_y:.2f}" stroke="#c62828" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="{left + plot_width - 8}" y="{collapse_y - 6:.2f}" text-anchor="end" font-family="sans-serif" font-size="12" fill="#c62828">Пластический предел Fᵤ = {collapse_load:.0f} Н</text>
+{f'<line x1="{failure_x:.2f}" y1="{top}" x2="{failure_x:.2f}" y2="{top + plot_height}" stroke="#c62828" stroke-width="1.5" stroke-dasharray="3 3"/>' if failure_x is not None else ''}
 <polyline points="{points}" fill="none" stroke="#1769aa" stroke-width="2.5"/>
 <text x="{left + plot_width / 2}" y="{height - 20}" text-anchor="middle" font-family="sans-serif">Center displacement (m)</text>
 <text x="22" y="{top + plot_height / 2}" transform="rotate(-90 22 {top + plot_height / 2})" text-anchor="middle" font-family="sans-serif">Reaction force (N)</text>
@@ -572,6 +689,8 @@ def write_animation_html(
     frames: list[dict[str, object]],
     history: list[dict[str, float | int]],
     parameters: Parameters,
+    collapse_load: float,
+    post_failure_steps: int,
     path: Path,
 ) -> None:
     fibers = [
@@ -591,6 +710,8 @@ def write_animation_html(
             "force": row["force_N"],
             "travel": row["displacement_m"],
             "step": row["step"],
+            "collapse": row["collapse_criterion_met"],
+            "postFailureIteration": row["post_failure_iteration"],
         }
         for frame, row in zip(frames, history)
     ]
@@ -602,6 +723,9 @@ def write_animation_html(
             "height": parameters.height,
             "blocks": parameters.blocks,
             "width": parameters.width,
+            "collapseLoad": collapse_load,
+            "failureDetected": any(row["collapse_criterion_met"] for row in history),
+            "postFailureSteps": post_failure_steps,
         },
         separators=(",", ":"),
     )
@@ -628,7 +752,7 @@ input[type=range] {{ flex: 1; min-width: 180px; }}
 <body>
 <main>
 <h1>Нагружение ледяной балки — DEM</h1>
-<p>Анимация квазистатических шагов расчёта. Деформация увеличена в 4 раза для наглядности; значения перемещения и нагрузки указаны без увеличения. Цветом показано состояние связей по высоте балки.</p>
+<p>Квазистатическая DEM-анимация. После пересечения красной линии — предела пластического механизма — центральный блок мгновенно отсоединяется, и показана постразрушительная фаза; динамика падения не моделируется.</p>
 <svg id="scene" viewBox="0 0 1550 500" role="img" aria-label="Анимация нагружения балки и график силы"></svg>
 <div class="controls">
 <button id="play" type="button">Пауза</button>
@@ -670,8 +794,17 @@ const deformationScale = 4;
 const fibersPerInterface = data.fibers.length / (data.blocks - 1);
 const layerHeight = data.height / fibersPerInterface;
 const plot = {{left: 1120, top: 125, width: 370, height: 260}};
-const maxTravel = Math.max(...data.frames.map(frame => frame.travel));
-const maxForce = Math.max(...data.frames.map(frame => frame.force));
+let maxTravel = 0, maxForce = data.collapseLoad, tensionLimit = 1, compressionLimit = 1;
+for (const item of data.frames) {{
+  maxTravel = Math.max(maxTravel, item.travel);
+  maxForce = Math.max(maxForce, item.force);
+  for (const stress of item.stresses) {{
+    if (stress > 0) tensionLimit = Math.max(tensionLimit, stress);
+    if (stress < 0) compressionLimit = Math.max(compressionLimit, -stress);
+  }}
+}}
+maxForce *= 1.1;
+const travelDigits = maxTravel * 1000 < 0.1 ? 3 : 1;
 let current = 0, playing = true, lastTime = 0, accumulator = 0;
 const add = (name, attrs, parent = svg) => {{
   const element = document.createElementNS(NS, name);
@@ -721,8 +854,6 @@ function draw(frameIndex) {{
     <marker id="stressCompressionArrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="${{stressCompressionColor}}"/></marker>`;
   const vectorBlockStride = Math.max(1, Math.ceil((data.blocks - 1) / 12));
   const vectorLayerStride = Math.max(1, Math.ceil(fibersPerInterface / 6));
-  const tensionLimit = Math.max(...data.frames.flatMap(item=>item.stresses.filter(value=>value>0)), 1);
-  const compressionLimit = Math.max(...data.frames.flatMap(item=>item.stresses.filter(value=>value<0).map(value=>-value)), 1);
   for (let block=0;block<data.blocks-1;block+=vectorBlockStride) {{
     for (let layer=0;layer<fibersPerInterface;layer+=vectorLayerStride) {{
       const index=block*fibersPerInterface+layer;
@@ -799,8 +930,11 @@ function draw(frameIndex) {{
     add("text", {{x:plot.left-8,y:y+4,"text-anchor":"end","font-size":11,fill:"#526575"}}, chart).textContent=force.toFixed(0);
     const travel=maxTravel*tick/4, x=chartX(travel);
     add("line", {{x1:x,y1:chartBottom,x2:x,y2:chartBottom+4,stroke:"#526575","stroke-width":1}}, chart);
-    add("text", {{x:x,y:chartBottom+18,"text-anchor":"middle","font-size":10,fill:"#526575"}}, chart).textContent=(travel*1000).toFixed(1);
+    add("text", {{x:x,y:chartBottom+18,"text-anchor":"middle","font-size":10,fill:"#526575"}}, chart).textContent=(travel*1000).toFixed(travelDigits);
   }}
+  const collapseY=chartY(data.collapseLoad);
+  add("line", {{x1:plot.left,y1:collapseY,x2:chartRight,y2:collapseY,stroke:"#c62828","stroke-width":1.5,"stroke-dasharray":"6 4"}}, chart);
+  add("text", {{x:chartRight-4,y:collapseY-6,"text-anchor":"end","font-size":11,fill:"#c62828"}}, chart).textContent=`Fᵤ = ${{(data.collapseLoad/1000).toFixed(2)}} кН`;
   const curve=data.frames.map(point=>`${{chartX(point.travel).toFixed(2)}},${{chartY(point.force).toFixed(2)}}`).join(" ");
   add("polyline", {{points:curve,fill:"none",stroke:"#b6c8d8","stroke-width":2}}, chart);
   const passedCurve=data.frames.slice(0,frameIndex+1).map(point=>`${{chartX(point.travel).toFixed(2)}},${{chartY(point.force).toFixed(2)}}`).join(" ");
@@ -813,7 +947,10 @@ function draw(frameIndex) {{
   const damagedSections = Array.from({{length:data.blocks-1}},(_,block)=>
     [...frame.states.slice(block*fibersPerInterface,(block+1)*fibersPerInterface)].some(s=>"oapx".includes(s))
   ).filter(Boolean).length;
-  readout.textContent = `u = ${{(frame.travel*1000).toFixed(3)}} мм · F = ${{frame.force.toFixed(1)}} Н · сечения с трещинами: ${{damagedSections}}`;
+  const failureStatus = frame.postFailureIteration > 0
+    ? ` · ПОСЛЕ РАЗРУШЕНИЯ ${{frame.postFailureIteration}}/${{data.postFailureSteps}}`
+    : frame.collapse ? " · ПРЕДЕЛЬНОЕ СОСТОЯНИЕ" : "";
+  readout.textContent = `u = ${{(frame.travel*1000).toFixed(3)}} мм · F = ${{frame.force.toFixed(1)}} Н · сечения с трещинами: ${{damagedSections}}${{failureStatus}}`;
   slider.value = frameIndex;
 }}
 function animate(time) {{
@@ -821,9 +958,17 @@ function animate(time) {{
     if (!lastTime) lastTime = time;
     accumulator += (time - lastTime) * Number(speed.value);
     if (accumulator >= 100) {{
-      current = (current + Math.floor(accumulator / 100)) % data.frames.length;
+      const next = current + Math.floor(accumulator / 100);
+      if (next >= data.frames.length && data.failureDetected) {{
+        current = data.frames.length - 1;
+        playing = false;
+        button.textContent = "Воспроизвести";
+        draw(current);
+      }} else {{
+        current = next % data.frames.length;
+        draw(current);
+      }}
       accumulator %= 100;
-      draw(current);
     }}
   }}
   lastTime = time;

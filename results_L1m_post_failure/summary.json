@@ -1,0 +1,77 @@
+{
+  "model": "2D rigid cross-section DEM with fiber bonds and unilateral compression contact",
+  "parameters": {
+    "length": 1.0,
+    "height": 0.1,
+    "width": 0.1,
+    "youngs_modulus": 9000000000.0,
+    "poisson_ratio": 0.3,
+    "density": 917.0,
+    "tensile_strength": 700000.0,
+    "compressive_strength": 3000000.0,
+    "max_displacement": 0.005,
+    "steps": 1000,
+    "blocks": 41,
+    "fibers": 21
+  },
+  "mesh": {
+    "rigid_blocks": 41,
+    "fiber_bonds_per_interface": 21,
+    "interfaces": 40,
+    "dx_m": 0.025
+  },
+  "actual_steps": 685,
+  "first_tensile_crack": {
+    "displacement_m": 8.058058058058058e-05,
+    "force_N": 1031.8285295141368,
+    "x_m": 0.0125,
+    "z_m": 0.04761904761904763
+  },
+  "peak_force_N": 2288.314215147283,
+  "peak_force_displacement_m": 0.0005401696606786427,
+  "plastic_collapse": {
+    "criterion": "first displacement-controlled reaction at or above the plastic limit load",
+    "neutral_axis_depth_m": 0.01891891891891892,
+    "plastic_moment_Nm": 283.7837837837838,
+    "limit_load_N": 2270.2702702702704,
+    "event": {
+      "step": 675,
+      "displacement_m": 0.0005401696606786427,
+      "reaction_N": 2288.314215147283,
+      "limit_load_N": 2270.2702702702704,
+      "overshoot_percent": 0.7947928100588975
+    },
+    "post_failure": {
+      "model": "instantaneous severance of both interfaces adjacent to the punch block",
+      "severed_interfaces": [
+        19,
+        20
+      ],
+      "continuation_steps": 10,
+      "final_reaction_N": 0.0,
+      "reaction_reached_zero": true
+    },
+    "assumptions": [
+      "rectangular section with uniform tensile and compressive strength blocks",
+      "zero axial resultant and three plastic hinges at both clamps and midspan",
+      "post-limit central separation is imposed instantaneously; no fragment dynamics are simulated",
+      "post-limit stress vectors are hidden because the dynamic release path is not modeled"
+    ]
+  },
+  "post_crack_peak_force_N": 2288.314215147283,
+  "final_broken_bonds": 72,
+  "final_active_compression_contacts": 8,
+  "final_crushed_bonds": 16,
+  "max_compressive_bond_stress_Pa": 3000000.0,
+  "compressive_strength_reached": true,
+  "sodhi_reference": {
+    "first_crack_force_Ff_N": 933.3333333333335,
+    "post_failure_force_at_beta_1_3_Fc_N": 2666.666666666667
+  },
+  "artifacts": [
+    "force_displacement.csv",
+    "force_displacement.svg",
+    "crack_state.svg",
+    "beam_animation.html"
+  ]
+}

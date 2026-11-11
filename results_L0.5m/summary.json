@@ -1,0 +1,47 @@
+{
+  "model": "2D rigid cross-section DEM with fiber bonds and unilateral compression contact",
+  "parameters": {
+    "length": 0.5,
+    "height": 0.1,
+    "width": 0.1,
+    "youngs_modulus": 9000000000.0,
+    "poisson_ratio": 0.3,
+    "density": 917.0,
+    "tensile_strength": 700000.0,
+    "compressive_strength": 3000000.0,
+    "max_displacement": 0.005,
+    "steps": 100,
+    "blocks": 41,
+    "fibers": 21
+  },
+  "mesh": {
+    "rigid_blocks": 41,
+    "fiber_bonds_per_interface": 21,
+    "interfaces": 40,
+    "dx_m": 0.0125
+  },
+  "first_tensile_crack": {
+    "displacement_m": 2.91456228956229e-05,
+    "force_N": 2239.9263408771067,
+    "x_m": 0.00625,
+    "z_m": 0.04761904761904763
+  },
+  "peak_force_N": 6301.468851303645,
+  "peak_force_displacement_m": 0.0012561274509803922,
+  "post_crack_peak_force_N": 6301.468851303645,
+  "final_broken_bonds": 72,
+  "final_active_compression_contacts": 64,
+  "final_crushed_bonds": 64,
+  "max_compressive_bond_stress_Pa": 3000000.0,
+  "compressive_strength_reached": true,
+  "sodhi_reference": {
+    "first_crack_force_Ff_N": 1866.666666666667,
+    "post_failure_force_at_beta_1_3_Fc_N": 5333.333333333334
+  },
+  "artifacts": [
+    "force_displacement.csv",
+    "force_displacement.svg",
+    "crack_state.svg",
+    "beam_animation.html"
+  ]
+}

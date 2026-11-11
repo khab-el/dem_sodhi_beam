@@ -13,7 +13,14 @@ The formulation is a quasi-static 2D DEM reduced to rigid cross-sections, not a
 full 3D particle model. It uses small-displacement, linear springs and no
 friction or inertia. Crushing is idealized as a perfectly plastic compression
 plateau; post-crush compaction is not modeled. Density is recorded but does not
-affect a quasi-static solve.
+affect a quasi-static solve. A separate three-hinge plastic limit criterion
+estimates global collapse. At its first crossing, the demo imposes an
+instantaneous complete break at the two interfaces adjoining the punch block,
+then continues for fifty display steps to show the zero-reaction final
+state. During those display steps the beam halves are held at their last
+pre-collapse shape while the detached punch block moves down, avoiding an
+unsupported post-fracture static equilibrium. This is a visualization
+idealization, not a dynamic post-collapse simulation.
 
 ## Run
 
@@ -37,7 +44,8 @@ increasing both.
 The run writes:
 
 - `force_displacement.csv` — punch reaction, displacement, broken fiber bonds,
-  and active compression contacts;
+  active compression contacts, the plastic-collapse threshold, and the
+  post-failure continuation index;
 - `force_displacement.svg` — load-displacement curve;
 - `crack_state.svg` — final bond state: tension, compression, crack-face
   compression contact, open tensile cracks, and crushed fibers;
@@ -49,14 +57,24 @@ The run writes:
   Vertical markers show broken, contacting, or crushed bonds. The displayed
   deformation is magnified 4x; force and displacement readouts are actual.
   An adjacent force-displacement graph tracks the current animation step;
-- `summary.json` — parameters, first crack, peak loads, compressive stress, and
-  analytical Sodhi reference loads.
+- `summary.json` — parameters, first crack, the derived plastic moment and
+  collapse load, the first collapse-threshold crossing, the idealized
+  post-failure section cut, and analytical Sodhi reference loads.
 
 The reference loads are `Ff = 4 sigma_t w h^2/(3 L)` for first flexural
 cracking and `Fc = 8 sigma_c w h^2/(9 L)` for Sodhi's post-failure formula at
-`beta = 1/3`. They are comparison values, not calibration targets. The
-simulation is an educational reduced-order DEM; validate mesh convergence and
-material/contact parameters before using predictions quantitatively.
+`beta = 1/3`. The separate plastic limit used to stop the simulation is
+`Fu = 4 w h^2 sigma_t sigma_c/[L(sigma_t + sigma_c)]`, derived from a
+rectangular stress block and a three-hinge mechanism at the two clamps and
+midspan. The discrete reaction may overshoot `Fu` at the first crossing because
+the loading is displacement-controlled and damage is brittle. After crossing,
+the punch-adjacent block is intentionally disconnected from both neighboring
+beam portions so its computed reaction becomes zero. This artificial
+post-failure cut is used to illustrate loss of load path; it does not predict
+the physical crack trajectory, fragment motion, or energy release. These are
+comparison/limit values, not calibration targets. The simulation is an
+educational reduced-order DEM; validate mesh convergence and material/contact
+parameters before using predictions quantitatively.
 
 For the detailed derivation of the discrete spring laws, damage/contact
 transitions, assembled equilibrium equations, and load-step algorithm, see

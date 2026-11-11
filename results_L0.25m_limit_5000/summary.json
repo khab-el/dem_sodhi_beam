@@ -1,0 +1,65 @@
+{
+  "model": "2D rigid cross-section DEM with fiber bonds and unilateral compression contact",
+  "parameters": {
+    "length": 0.25,
+    "height": 0.1,
+    "width": 0.1,
+    "youngs_modulus": 9000000000.0,
+    "poisson_ratio": 0.3,
+    "density": 917.0,
+    "tensile_strength": 700000.0,
+    "compressive_strength": 3000000.0,
+    "max_displacement": 0.005,
+    "steps": 5000,
+    "blocks": 21,
+    "fibers": 21
+  },
+  "mesh": {
+    "rigid_blocks": 21,
+    "fiber_bonds_per_interface": 21,
+    "interfaces": 20,
+    "dx_m": 0.0125
+  },
+  "first_tensile_crack": {
+    "displacement_m": 1.4105642256902763e-05,
+    "force_N": 4349.1276171423115,
+    "x_m": 0.00625,
+    "z_m": 0.04761904761904763
+  },
+  "peak_force_N": 9262.75039497213,
+  "peak_force_displacement_m": 4.989758193445244e-05,
+  "plastic_collapse": {
+    "criterion": "first displacement-controlled reaction at or above the plastic limit load",
+    "neutral_axis_depth_m": 0.01891891891891892,
+    "plastic_moment_Nm": 283.7837837837838,
+    "limit_load_N": 9081.081081081082,
+    "event": {
+      "step": 3340,
+      "displacement_m": 4.989758193445244e-05,
+      "reaction_N": 9262.75039497213,
+      "limit_load_N": 9081.081081081082,
+      "overshoot_percent": 2.0005251827288184
+    },
+    "assumptions": [
+      "rectangular section with uniform tensile and compressive strength blocks",
+      "zero axial resultant and three plastic hinges at both clamps and midspan",
+      "quasi-static collapse limit; post-collapse motion is not simulated"
+    ]
+  },
+  "post_crack_peak_force_N": 9262.75039497213,
+  "final_broken_bonds": 52,
+  "final_active_compression_contacts": 12,
+  "final_crushed_bonds": 12,
+  "max_compressive_bond_stress_Pa": 3000000.0,
+  "compressive_strength_reached": true,
+  "sodhi_reference": {
+    "first_crack_force_Ff_N": 3733.333333333334,
+    "post_failure_force_at_beta_1_3_Fc_N": 10666.666666666668
+  },
+  "artifacts": [
+    "force_displacement.csv",
+    "force_displacement.svg",
+    "crack_state.svg",
+    "beam_animation.html"
+  ]
+}
