@@ -25,6 +25,10 @@ class Parameters:
     steps: int = 100
     blocks: int = 41
     fibers: int = 21
+    support_model: str = "clamped"
+    end_eccentricity_ratio: float = 0.0
+    fracture_model: str = "brittle"
+    post_crack_modulus_ratio: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,7 @@ class Spring:
     z: float = 0.0
     x: float = 0.0
     is_fiber: bool = False
+    is_support: bool = False
 
 
 def inner(first: list[float], second: list[float]) -> float:
@@ -114,9 +119,32 @@ def build_springs(parameters: Parameters) -> tuple[list[Spring], list[int], int,
             )
         )
 
-    fixed_dofs = [0, 1, 2]
     last_block = parameters.blocks - 1
-    fixed_dofs.extend((3 * last_block, 3 * last_block + 1, 3 * last_block + 2))
+    if parameters.support_model == "clamped":
+        fixed_dofs = [0, 1, 2, 3 * last_block, 3 * last_block + 1, 3 * last_block + 2]
+    elif parameters.support_model == "simply_supported":
+        fixed_dofs = [0, 1, 3 * last_block + 1]
+    elif parameters.support_model == "eccentric_axial_restraint":
+        fixed_dofs = [1, 3 * last_block + 1]
+        support_stiffness = (
+            1.0e6
+            * parameters.youngs_modulus
+            * parameters.width
+            * parameters.height
+            / parameters.length
+        )
+        eccentricity = parameters.end_eccentricity_ratio * parameters.length
+        for block in (0, last_block):
+            springs.append(
+                Spring(
+                    (3 * block, 3 * block + 2),
+                    (1.0, -eccentricity),
+                    support_stiffness,
+                    is_support=True,
+                )
+            )
+    else:
+        raise ValueError(f"Unknown support model: {parameters.support_model}")
     center_block = (parameters.blocks - 1) // 2
     punch_dof = 3 * center_block + 1
     return springs, fixed_dofs, punch_dof, dx
@@ -181,6 +209,18 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
         raise ValueError("Compressive strength must be positive")
     if not 0.0 <= parameters.poisson_ratio < 0.5:
         raise ValueError("Poisson ratio must be in [0, 0.5)")
+    if parameters.support_model not in (
+        "clamped",
+        "simply_supported",
+        "eccentric_axial_restraint",
+    ):
+        raise ValueError(f"Unknown support model: {parameters.support_model}")
+    if parameters.fracture_model not in ("brittle", "effective_modulus"):
+        raise ValueError(f"Unknown fracture model: {parameters.fracture_model}")
+    if not 0.0 <= parameters.end_eccentricity_ratio:
+        raise ValueError("End eccentricity ratio must be non-negative")
+    if not 0.0 < parameters.post_crack_modulus_ratio <= 1.0:
+        raise ValueError("Post-crack modulus ratio must be in (0, 1]")
 
     springs, fixed_dofs, punch_dof, dx = build_springs(parameters)
     dof_count = 3 * parameters.blocks
@@ -192,6 +232,7 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
     tensile_failed = [False] * len(springs)
     crushed = [False] * len(springs)
     catastrophic_failed = [False] * len(springs)
+    softened_interfaces: set[int] = set()
     contact_active = [False] * len(springs)
     crush_contact_active = [False] * len(springs)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -201,7 +242,12 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
     max_compressive_stress = 0.0
     stabilizer = parameters.youngs_modulus * parameters.width * parameters.height * 1e-10
     schedule = load_schedule(parameters)
-    plastic_moment, collapse_load = plastic_collapse_load(parameters)
+    plastic_moment, plastic_limit_load = plastic_collapse_load(parameters)
+    collapse_load = (
+        plastic_limit_load
+        if parameters.support_model == "clamped" and parameters.fracture_model == "brittle"
+        else None
+    )
     collapse_event: dict[str, float | int] | None = None
     post_failure_steps = 50
     catastrophic_failure = False
@@ -214,15 +260,29 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
         )
 
     def spring_is_active(index: int) -> bool:
+        spring = springs[index]
+        if catastrophic_failed[index]:
+            return False
+        if not spring.is_fiber:
+            return True
+        interface = spring.dofs[0] // 3
+        if parameters.fracture_model == "effective_modulus" and interface in softened_interfaces:
+            return True
         return (
-            not catastrophic_failed[index]
-            and (
-                not springs[index].is_fiber
-                or intact[index]
-                or (tensile_failed[index] and contact_active[index])
-                or (crushed[index] and crush_contact_active[index])
-            )
+            intact[index]
+            or (tensile_failed[index] and contact_active[index])
+            or (crushed[index] and crush_contact_active[index])
         )
+
+    def spring_stiffness(index: int) -> float:
+        spring = springs[index]
+        if (
+            parameters.fracture_model == "effective_modulus"
+            and not spring.is_support
+            and spring.dofs[0] // 3 in softened_interfaces
+        ):
+            return spring.stiffness * parameters.post_crack_modulus_ratio
+        return spring.stiffness
 
     def multiply(free_values: list[float]) -> list[float]:
         result = [stabilizer * value for value in free_values]
@@ -235,7 +295,7 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                 coefficient * (free_values[free_map[dof]] if dof in free_map else 0.0)
                 for dof, coefficient in zip(spring.dofs, spring.coefficients)
             )
-            force = spring.stiffness * spring_extension
+            force = spring_stiffness(index) * spring_extension
             for dof, coefficient in zip(spring.dofs, spring.coefficients):
                 free_index = free_map.get(dof)
                 if free_index is not None:
@@ -276,11 +336,12 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                     coefficient * (displacement[dof] if dof not in free_map else 0.0)
                     for dof, coefficient in zip(spring.dofs, spring.coefficients)
                 )
-                known_force = spring.stiffness * known_extension
+                stiffness = spring_stiffness(index)
+                known_force = stiffness * known_extension
                 for dof, coefficient in zip(spring.dofs, spring.coefficients):
                     free_index = free_map.get(dof)
                     if free_index is not None:
-                        diagonal[free_index] += spring.stiffness * coefficient**2
+                        diagonal[free_index] += stiffness * coefficient**2
                         known_product[free_index] += known_force * coefficient
 
             rhs = [
@@ -308,7 +369,7 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                 spring = springs[index]
                 if catastrophic_failed[index] or crushed[index]:
                     continue
-                bond_stress = spring.stiffness * extension(spring, displacement) / spring.area
+                bond_stress = spring_stiffness(index) * extension(spring, displacement) / spring.area
                 if tensile_failed[index]:
                     if contact_active[index] and bond_stress < -parameters.compressive_strength:
                         crushed[index] = True
@@ -327,7 +388,7 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                         for active_index, active_spring in enumerate(springs):
                             if not spring_is_active(active_index):
                                 continue
-                            active_force = active_spring.stiffness * extension(
+                            active_force = spring_stiffness(active_index) * extension(
                                 active_spring, displacement
                             )
                             for dof, coefficient in zip(
@@ -338,6 +399,8 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                     intact[index] = False
                     tensile_failed[index] = True
                     contact_active[index] = False
+                    if parameters.fracture_model == "effective_modulus":
+                        softened_interfaces.add(spring.dofs[0] // 3)
                     broke_bond = True
                     if first_crack is None:
                         first_crack = {
@@ -367,6 +430,8 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                         crush_contact_active[index] = compressed
                         contact_changed = True
                 elif tensile_failed[index]:
+                    if parameters.fracture_model == "effective_modulus":
+                        continue
                     compressed = extension(springs[index], displacement) < 0.0
                     if compressed != contact_active[index]:
                         contact_active[index] = compressed
@@ -377,21 +442,26 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
             raise RuntimeError(f"Damage/contact iteration did not converge at load step {step}")
 
         punch_force = 0.0
+        end_reactions: list[float] = []
         for index, spring in enumerate(springs):
             if spring_is_active(index):
+                spring_force = spring_stiffness(index) * extension(spring, displacement)
+                if spring.is_support:
+                    end_reactions.append(abs(spring_force * spring.coefficients[0]))
                 force = (
                     -parameters.compressive_strength * spring.area
                     if crushed[index]
-                    else spring.stiffness * extension(spring, displacement)
+                    else spring_force
                 )
                 for dof, coefficient in zip(spring.dofs, spring.coefficients):
                     if dof == punch_dof:
                         punch_force += force * coefficient
+        axial_restraint = sum(end_reactions) / len(end_reactions) if end_reactions else 0.0
 
         if not catastrophic_failure:
             for index in fiber_indices:
                 if spring_is_active(index) and not crushed[index]:
-                    stress = springs[index].stiffness * extension(springs[index], displacement) / springs[index].area
+                    stress = spring_stiffness(index) * extension(springs[index], displacement) / springs[index].area
                     max_compressive_stress = max(max_compressive_stress, -stress)
 
         history.append(
@@ -399,14 +469,21 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                 "step": step,
                 "displacement_m": punch_displacement,
                 "force_N": abs(punch_force),
+                "axial_restraint_N": axial_restraint,
+                "axial_to_punch_force_ratio": (
+                    axial_restraint / abs(punch_force) if punch_force else 0.0
+                ),
                 "collapse_limit_N": collapse_load,
-                "collapse_criterion_met": abs(punch_force) >= collapse_load,
+                "collapse_criterion_met": (
+                    collapse_load is not None and abs(punch_force) >= collapse_load
+                ),
                 "catastrophic_failure": catastrophic_failure,
                 "post_failure_iteration": (
                     step - int(collapse_event["step"]) if collapse_event is not None else 0
                 ),
                 "broken_bonds": sum(tensile_failed[index] for index in fiber_indices),
                 "crushed_bonds": sum(crushed[index] for index in fiber_indices),
+                "softened_interfaces": len(softened_interfaces),
                 "active_contacts": sum(
                     contact_active[index] or crush_contact_active[index]
                     for index in fiber_indices
@@ -419,17 +496,27 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
             if crushed[index]:
                 states.append("crushed_contact" if crush_contact_active[index] else "crushed_open")
                 stress = -parameters.compressive_strength if crush_contact_active[index] else 0.0
+            elif (
+                parameters.fracture_model == "effective_modulus"
+                and springs[index].dofs[0] // 3 in softened_interfaces
+            ):
+                states.append("softened")
+                stress = (
+                    spring_stiffness(index)
+                    * extension(springs[index], displacement)
+                    / springs[index].area
+                )
             elif tensile_failed[index]:
                 states.append("compression_contact" if contact_active[index] else "open_crack")
                 stress = (
-                    springs[index].stiffness
+                    spring_stiffness(index)
                     * extension(springs[index], displacement)
                     / springs[index].area
                     if contact_active[index]
                     else 0.0
                 )
             else:
-                bond_stress = springs[index].stiffness * extension(springs[index], displacement) / springs[index].area
+                bond_stress = spring_stiffness(index) * extension(springs[index], displacement) / springs[index].area
                 states.append(
                     "compression"
                     if bond_stress < -1e-6
@@ -442,7 +529,7 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
         if catastrophic_failure:
             stresses = [0.0] * len(stresses)
         frames.append({"displacement": displacement[:], "states": states, "stresses": stresses})
-        if collapse_event is None and abs(punch_force) >= collapse_load:
+        if collapse_load is not None and collapse_event is None and abs(punch_force) >= collapse_load:
             collapse_event = {
                 "step": step,
                 "displacement_m": punch_displacement,
@@ -508,7 +595,11 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
         "peak_force_N": float(peak["force_N"]),
         "peak_force_displacement_m": float(peak["displacement_m"]),
         "plastic_collapse": {
-            "criterion": "first displacement-controlled reaction at or above the plastic limit load",
+            "criterion": (
+                "first displacement-controlled reaction at or above the plastic limit load"
+                if collapse_load is not None
+                else "not applied: the three-hinge limit is not calibrated for this support/fracture model"
+            ),
             "neutral_axis_depth_m": (
                 parameters.tensile_strength
                 * parameters.height
@@ -518,7 +609,11 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
             "limit_load_N": collapse_load,
             "event": collapse_event,
             "post_failure": {
-                "model": "instantaneous severance of both interfaces adjacent to the punch block",
+                "model": (
+                    "instantaneous severance of both interfaces adjacent to the punch block"
+                    if collapse_load is not None
+                    else "not applied"
+                ),
                 "severed_interfaces": failed_interfaces,
                 "continuation_steps": (
                     max(0, len(history) - int(collapse_event["step"]))
@@ -528,15 +623,54 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                 "final_reaction_N": float(history[-1]["force_N"]),
                 "reaction_reached_zero": bool(history[-1]["force_N"] == 0.0),
             },
-            "assumptions": [
-                "rectangular section with uniform tensile and compressive strength blocks",
-                "zero axial resultant and three plastic hinges at both clamps and midspan",
-                "post-limit central separation is imposed instantaneously; no fragment dynamics are simulated",
-                "post-limit stress vectors are hidden because the dynamic release path is not modeled",
-            ],
+            "assumptions": (
+                [
+                    "rectangular section with uniform tensile and compressive strength blocks",
+                    "zero axial resultant and three plastic hinges at both clamps and midspan",
+                    "post-limit central separation is imposed instantaneously; no fragment dynamics are simulated",
+                    "post-limit stress vectors are hidden because the dynamic release path is not modeled",
+                ]
+                if collapse_load is not None
+                else [
+                    "plastic-collapse and central-severance criteria are disabled for this support/fracture model",
+                    "damaged interfaces retain the specified effective stiffness ratio",
+                    "no crack energy, inertia, or dynamic propagation is modeled",
+                ]
+            ),
         },
+        "axial_restraint_comparison": (
+            {
+                "alpha": parameters.end_eccentricity_ratio,
+                "paper_initial_elastic_N_over_P": (
+                    parameters.end_eccentricity_ratio
+                    / (
+                        16.0
+                        * (
+                            (parameters.height / math.sqrt(12.0) / parameters.length) ** 2
+                            + parameters.end_eccentricity_ratio**2
+                        )
+                    )
+                    if parameters.end_eccentricity_ratio
+                    else 0.0
+                ),
+                "initial_numerical_N_over_P": float(
+                    history[0]["axial_to_punch_force_ratio"]
+                ),
+                "maximum_numerical_N_over_P": max(
+                    float(row["axial_to_punch_force_ratio"]) for row in history
+                ),
+                "ratio_at_peak_load": float(peak["axial_to_punch_force_ratio"]),
+                "note": (
+                    "The analytical value is an initial-elastic estimate; the reduced "
+                    "linear DEM, penalty restraints, and damage redistribution need not match it."
+                ),
+            }
+            if parameters.support_model == "eccentric_axial_restraint"
+            else None
+        ),
         "post_crack_peak_force_N": max((float(row["force_N"]) for row in post_crack), default=0.0),
         "final_broken_bonds": int(history[-1]["broken_bonds"]),
+        "final_softened_interfaces": len(softened_interfaces),
         "final_active_compression_contacts": int(history[-1]["active_contacts"]),
         "final_crushed_bonds": sum(crushed[index] for index in fiber_indices),
         "max_compressive_bond_stress_Pa": max_compressive_stress,
@@ -570,15 +704,22 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
 def write_force_svg(
     history: list[dict[str, float | int]],
     path: Path,
-    collapse_load: float,
+    collapse_load: float | None,
 ) -> None:
     width, height = 900, 520
     left, top, right, bottom = 85, 35, 30, 75
     plot_width, plot_height = width - left - right, height - top - bottom
     max_x = max(float(row["displacement_m"]) for row in history)
-    max_y = max(max(float(row["force_N"]) for row in history), collapse_load) * 1.1
-    collapse_y = top + (1.0 - collapse_load / max_y) * plot_height
-    failure = next((row for row in history if row["collapse_criterion_met"]), None)
+    max_y = max(max(float(row["force_N"]) for row in history), collapse_load or 0.0) * 1.1
+    collapse_y = (
+        top + (1.0 - collapse_load / max_y) * plot_height
+        if collapse_load is not None
+        else None
+    )
+    failure = next(
+        (row for row in history if row["collapse_criterion_met"]),
+        None,
+    ) if collapse_load is not None else None
     failure_x = (
         left + float(failure["displacement_m"]) / max_x * plot_width
         if failure is not None
@@ -593,8 +734,7 @@ def write_force_svg(
 <rect width="100%" height="100%" fill="white"/>
 <text x="{width / 2}" y="24" text-anchor="middle" font-family="sans-serif" font-size="18">Ice beam DEM: force-displacement</text>
 <path d="M {left} {top} V {top + plot_height} H {left + plot_width}" fill="none" stroke="#333" stroke-width="2"/>
-<line x1="{left}" y1="{collapse_y:.2f}" x2="{left + plot_width}" y2="{collapse_y:.2f}" stroke="#c62828" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="{left + plot_width - 8}" y="{collapse_y - 6:.2f}" text-anchor="end" font-family="sans-serif" font-size="12" fill="#c62828">Пластический предел Fᵤ = {collapse_load:.0f} Н</text>
+{f'<line x1="{left}" y1="{collapse_y:.2f}" x2="{left + plot_width}" y2="{collapse_y:.2f}" stroke="#c62828" stroke-width="1.5" stroke-dasharray="6 4"/><text x="{left + plot_width - 8}" y="{collapse_y - 6:.2f}" text-anchor="end" font-family="sans-serif" font-size="12" fill="#c62828">Пластический предел Fᵤ = {collapse_load:.0f} Н</text>' if collapse_load is not None and collapse_y is not None else ''}
 {f'<line x1="{failure_x:.2f}" y1="{top}" x2="{failure_x:.2f}" y2="{top + plot_height}" stroke="#c62828" stroke-width="1.5" stroke-dasharray="3 3"/>' if failure_x is not None else ''}
 <polyline points="{points}" fill="none" stroke="#1769aa" stroke-width="2.5"/>
 <text x="{left + plot_width / 2}" y="{height - 20}" text-anchor="middle" font-family="sans-serif">Center displacement (m)</text>
@@ -610,6 +750,7 @@ def bond_color(state: str) -> str:
     return {
         "tension": "#d84315",
         "compression": "#1565c0",
+        "softened": "#ef6c00",
         "compression_contact": "#00a6a6",
         "open_crack": "#c62828",
         "crushed_contact": "#6a1b9a",
@@ -621,6 +762,7 @@ def bond_color(state: str) -> str:
 STATE_CODES = {
     "tension": "t",
     "compression": "c",
+    "softened": "m",
     "compression_contact": "a",
     "open_crack": "o",
     "crushed_contact": "p",
@@ -646,6 +788,7 @@ def write_crack_svg(
     labels = {
         "tension": "Растяжение",
         "compression": "Сжатие",
+        "softened": "Ослабленное сечение",
         "compression_contact": "Контакт трещины в сжатии",
         "open_crack": "Открытая трещина",
         "crushed_contact": "Раздавлено, контакт",
@@ -689,7 +832,7 @@ def write_animation_html(
     frames: list[dict[str, object]],
     history: list[dict[str, float | int]],
     parameters: Parameters,
-    collapse_load: float,
+    collapse_load: float | None,
     post_failure_steps: int,
     path: Path,
 ) -> None:
@@ -723,12 +866,39 @@ def write_animation_html(
             "height": parameters.height,
             "blocks": parameters.blocks,
             "width": parameters.width,
+            "supportModel": parameters.support_model,
+            "endEccentricityRatio": parameters.end_eccentricity_ratio,
             "collapseLoad": collapse_load,
             "failureDetected": any(row["collapse_criterion_met"] for row in history),
             "postFailureSteps": post_failure_steps,
         },
         separators=(",", ":"),
     )
+    support_description = (
+        "шарнирными вертикальными опорами и эксцентричным продольным стеснением"
+        if parameters.support_model == "eccentric_axial_restraint"
+        else "шарнирными вертикальными опорами"
+        if parameters.support_model == "simply_supported"
+        else "защемлёнными концами"
+    )
+    if parameters.fracture_model == "effective_modulus":
+        animation_description = (
+            f"Квазистатическая DEM-анимация с {support_description}. Повреждённые "
+            "сечения продолжают передавать усилия с заданным эффективным модулем; "
+            "искусственное отсоединение и несоответствующий этой схеме пластический "
+            "предел не применяются."
+        )
+    elif collapse_load is not None:
+        animation_description = (
+            "Квазистатическая DEM-анимация. После пересечения красной линии — предела "
+            "пластического механизма — центральный блок мгновенно отсоединяется, и показана "
+            "постразрушительная фаза; динамика падения не моделируется."
+        )
+    else:
+        animation_description = (
+            f"Квазистатическая DEM-анимация с {support_description}. Пластический предел "
+            "и искусственное отсоединение центрального блока для этой схемы не применяются."
+        )
     html = f"""<!doctype html>
 <html lang="ru">
 <head>
@@ -752,7 +922,7 @@ input[type=range] {{ flex: 1; min-width: 180px; }}
 <body>
 <main>
 <h1>Нагружение ледяной балки — DEM</h1>
-<p>Квазистатическая DEM-анимация. После пересечения красной линии — предела пластического механизма — центральный блок мгновенно отсоединяется, и показана постразрушительная фаза; динамика падения не моделируется.</p>
+<p>{animation_description}</p>
 <svg id="scene" viewBox="0 0 1550 500" role="img" aria-label="Анимация нагружения балки и график силы"></svg>
 <div class="controls">
 <button id="play" type="button">Пауза</button>
@@ -764,6 +934,7 @@ input[type=range] {{ flex: 1; min-width: 180px; }}
 <div class="legend">
 <span style="--c:#d84315">Растяжение</span>
 <span style="--c:#1565c0">Сжатие</span>
+<span style="--c:#ef6c00">Ослабленное сечение</span>
 <span style="--c:#00a6a6">Контакт трещины</span>
 <span style="--c:#c62828">Открытая трещина</span>
 <span style="--c:#6a1b9a">Раздавлено, контакт</span>
@@ -780,12 +951,12 @@ const speed = document.getElementById("speed");
 const readout = document.getElementById("readout");
 const NS = "http://www.w3.org/2000/svg";
 const colors = {{
-  t: "#d84315", c: "#1565c0", a: "#00a6a6",
+  t: "#d84315", c: "#1565c0", m: "#ef6c00", a: "#00a6a6",
   o: "#c62828", p: "#6a1b9a", x: "#795548", n: "#aeb7c2"
 }};
 const stressTensionColor = "#c62828", stressCompressionColor = "#0d47a1";
 const fills = {{
-  t: "#f7b49e", c: "#a9c8ef", a: "#8bd9d5",
+  t: "#f7b49e", c: "#a9c8ef", m: "#ffd180", a: "#8bd9d5",
   o: "#ffe0dc", p: "#d6b7e7", x: "#d9c5b9", n: "#dceef8"
 }};
 const beamTop = 118, beamHeight = 210, left = 60, beamWidth = 980;
@@ -794,7 +965,7 @@ const deformationScale = 4;
 const fibersPerInterface = data.fibers.length / (data.blocks - 1);
 const layerHeight = data.height / fibersPerInterface;
 const plot = {{left: 1120, top: 125, width: 370, height: 260}};
-let maxTravel = 0, maxForce = data.collapseLoad, tensionLimit = 1, compressionLimit = 1;
+let maxTravel = 0, maxForce = data.collapseLoad ?? 0, tensionLimit = 1, compressionLimit = 1;
 for (const item of data.frames) {{
   maxTravel = Math.max(maxTravel, item.travel);
   maxForce = Math.max(maxForce, item.force);
@@ -825,7 +996,7 @@ function interfaceState(frame, block, layer) {{
   const candidates = [];
   if (block > 0) candidates.push(frame.states[(block - 1) * fibersPerInterface + layer]);
   if (block < data.blocks - 1) candidates.push(frame.states[block * fibersPerInterface + layer]);
-  const rank = {{o:7, p:6, x:5, a:4, t:3, c:3, n:1}};
+  const rank = {{m:8, o:7, p:6, x:5, a:4, t:3, c:3, n:1}};
   return candidates.sort((a,b)=>(rank[b]||0)-(rank[a]||0))[0] || "n";
 }}
 function draw(frameIndex) {{
@@ -900,12 +1071,35 @@ function draw(frameIndex) {{
   }}
   const baseline = add("line", {{x1:left,y1:beamTop+beamHeight+55,x2:left+beamWidth,y2:beamTop+beamHeight+55,stroke:"#687887","stroke-width":1.5}});
   const statesLayer = add("g", {{fill:"none"}});
-  for (const block of [0,data.blocks-1]) {{
-    const clampX = point(frame,block,0,0)[0] + (block === 0 ? -12 : 2);
-    add("rect", {{x:clampX,y:beamTop+beamHeight/2-beamHeight/2,width:10,height:beamHeight,fill:"#8a9299",stroke:"#42484e","stroke-width":1}}, statesLayer);
-    for (let hatch=0;hatch<8;hatch++) {{
-      const y=beamTop+20+hatch*23;
-      add("line", {{x1:clampX,y1:y,x2:clampX+(block===0?-8:18),y2:y+12,stroke:"#42484e","stroke-width":1}}, statesLayer);
+  if (data.supportModel === "clamped") {{
+    for (const block of [0,data.blocks-1]) {{
+      const clampX = point(frame,block,0,0)[0] + (block === 0 ? -12 : 2);
+      add("rect", {{x:clampX,y:beamTop,width:10,height:beamHeight,fill:"#8a9299",stroke:"#42484e","stroke-width":1}}, statesLayer);
+      for (let hatch=0;hatch<8;hatch++) {{
+        const y=beamTop+20+hatch*23;
+        add("line", {{x1:clampX,y1:y,x2:clampX+(block===0?-8:18),y2:y+12,stroke:"#42484e","stroke-width":1}}, statesLayer);
+      }}
+    }}
+  }} else {{
+    for (const block of [0,data.blocks-1]) {{
+      const [supportX,supportY] = point(frame,block,0,-data.height/2);
+      const direction = block === 0 ? -1 : 1;
+      add("polygon", {{
+        points:`${{supportX}},${{supportY}} ${{supportX-14}},${{supportY+24}} ${{supportX+14}},${{supportY+24}}`,
+        fill:"#dce4eb",stroke:"#526575","stroke-width":1.5
+      }},statesLayer);
+      add("line", {{x1:supportX-21,y1:supportY+25,x2:supportX+21,y2:supportY+25,stroke:"#526575","stroke-width":2}},statesLayer);
+      for (let hatch=0;hatch<4;hatch++) {{
+        const hatchX=supportX-18+hatch*12;
+        add("line", {{x1:hatchX,y1:supportY+25,x2:hatchX-5,y2:supportY+32,stroke:"#526575","stroke-width":1}},statesLayer);
+      }}
+      if (data.supportModel === "eccentric_axial_restraint") {{
+        const eccentricity=data.endEccentricityRatio*data.length;
+        const [restraintX,restraintY]=point(frame,block,0,eccentricity);
+        const wallX=restraintX+direction*28;
+        add("line", {{x1:restraintX,y1:restraintY,x2:wallX,y2:restraintY,stroke:"#6a1b9a","stroke-width":2,"stroke-dasharray":"4 3"}},statesLayer);
+        add("line", {{x1:wallX,y1:restraintY-14,x2:wallX,y2:restraintY+14,stroke:"#42484e","stroke-width":2}},statesLayer);
+      }}
     }}
   }}
   const punchX = left + data.length/2 * scaleX;
@@ -932,9 +1126,11 @@ function draw(frameIndex) {{
     add("line", {{x1:x,y1:chartBottom,x2:x,y2:chartBottom+4,stroke:"#526575","stroke-width":1}}, chart);
     add("text", {{x:x,y:chartBottom+18,"text-anchor":"middle","font-size":10,fill:"#526575"}}, chart).textContent=(travel*1000).toFixed(travelDigits);
   }}
-  const collapseY=chartY(data.collapseLoad);
-  add("line", {{x1:plot.left,y1:collapseY,x2:chartRight,y2:collapseY,stroke:"#c62828","stroke-width":1.5,"stroke-dasharray":"6 4"}}, chart);
-  add("text", {{x:chartRight-4,y:collapseY-6,"text-anchor":"end","font-size":11,fill:"#c62828"}}, chart).textContent=`Fᵤ = ${{(data.collapseLoad/1000).toFixed(2)}} кН`;
+  if (data.collapseLoad !== null) {{
+    const collapseY=chartY(data.collapseLoad);
+    add("line", {{x1:plot.left,y1:collapseY,x2:chartRight,y2:collapseY,stroke:"#c62828","stroke-width":1.5,"stroke-dasharray":"6 4"}}, chart);
+    add("text", {{x:chartRight-4,y:collapseY-6,"text-anchor":"end","font-size":11,fill:"#c62828"}}, chart).textContent=`Fᵤ = ${{(data.collapseLoad/1000).toFixed(2)}} кН`;
+  }}
   const curve=data.frames.map(point=>`${{chartX(point.travel).toFixed(2)}},${{chartY(point.force).toFixed(2)}}`).join(" ");
   add("polyline", {{points:curve,fill:"none",stroke:"#b6c8d8","stroke-width":2}}, chart);
   const passedCurve=data.frames.slice(0,frameIndex+1).map(point=>`${{chartX(point.travel).toFixed(2)}},${{chartY(point.force).toFixed(2)}}`).join(" ");
@@ -945,12 +1141,12 @@ function draw(frameIndex) {{
   add("text", {{x:plot.left+plot.width/2,y:chartBottom+40,"text-anchor":"middle","font-size":13,fill:"#17212b"}}, chart).textContent="Перемещение, мм";
   add("text", {{x:plot.left-45,y:plot.top+plot.height/2,transform:`rotate(-90 ${{plot.left-45}} ${{plot.top+plot.height/2}})`,"text-anchor":"middle","font-size":13,fill:"#17212b"}}, chart).textContent="Сила, Н";
   const damagedSections = Array.from({{length:data.blocks-1}},(_,block)=>
-    [...frame.states.slice(block*fibersPerInterface,(block+1)*fibersPerInterface)].some(s=>"oapx".includes(s))
+    [...frame.states.slice(block*fibersPerInterface,(block+1)*fibersPerInterface)].some(s=>"moapx".includes(s))
   ).filter(Boolean).length;
   const failureStatus = frame.postFailureIteration > 0
     ? ` · ПОСЛЕ РАЗРУШЕНИЯ ${{frame.postFailureIteration}}/${{data.postFailureSteps}}`
     : frame.collapse ? " · ПРЕДЕЛЬНОЕ СОСТОЯНИЕ" : "";
-  readout.textContent = `u = ${{(frame.travel*1000).toFixed(3)}} мм · F = ${{frame.force.toFixed(1)}} Н · сечения с трещинами: ${{damagedSections}}${{failureStatus}}`;
+  readout.textContent = `u = ${{(frame.travel*1000).toFixed(3)}} мм · F = ${{frame.force.toFixed(1)}} Н · поврежденных сечений: ${{damagedSections}}${{failureStatus}}`;
   slider.value = frameIndex;
 }}
 function animate(time) {{
@@ -1002,6 +1198,30 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=100, help="Number of quasi-static load steps")
     parser.add_argument("--blocks", type=int, default=41, help="Odd number of rigid beam blocks")
     parser.add_argument("--fibers", type=int, default=21, help="Odd number of fiber bonds per interface")
+    parser.add_argument(
+        "--support-model",
+        choices=("clamped", "simply_supported", "eccentric_axial_restraint"),
+        default="clamped",
+        help="End support model",
+    )
+    parser.add_argument(
+        "--end-eccentricity-ratio",
+        type=float,
+        default=0.0,
+        help="Eccentric restraint offset alpha=e/L",
+    )
+    parser.add_argument(
+        "--fracture-model",
+        choices=("brittle", "effective_modulus"),
+        default="brittle",
+        help="Post-crack response model",
+    )
+    parser.add_argument(
+        "--post-crack-modulus-ratio",
+        type=float,
+        default=0.1,
+        help="Effective modulus ratio E_f/E after a section cracks",
+    )
     parser.add_argument("--output", type=Path, default=Path("results"), help="Output directory")
     args = parser.parse_args()
 
@@ -1018,6 +1238,10 @@ def main() -> None:
         steps=args.steps,
         blocks=args.blocks,
         fibers=args.fibers,
+        support_model=args.support_model,
+        end_eccentricity_ratio=args.end_eccentricity_ratio,
+        fracture_model=args.fracture_model,
+        post_crack_modulus_ratio=args.post_crack_modulus_ratio,
     )
     print(json.dumps(run_simulation(parameters, args.output), indent=2))
 

@@ -1,0 +1,80 @@
+{
+  "model": "2D rigid cross-section DEM with fiber bonds and unilateral compression contact",
+  "parameters": {
+    "length": 1.0,
+    "height": 0.1,
+    "width": 0.1,
+    "youngs_modulus": 9000000000.0,
+    "poisson_ratio": 0.3,
+    "density": 917.0,
+    "tensile_strength": 700000.0,
+    "compressive_strength": 3000000.0,
+    "max_displacement": 0.005,
+    "steps": 100,
+    "blocks": 41,
+    "fibers": 21,
+    "support_model": "eccentric_axial_restraint",
+    "end_eccentricity_ratio": 0.03,
+    "fracture_model": "effective_modulus",
+    "post_crack_modulus_ratio": 0.1
+  },
+  "mesh": {
+    "rigid_blocks": 41,
+    "fiber_bonds_per_interface": 21,
+    "interfaces": 40,
+    "dx_m": 0.025
+  },
+  "actual_steps": 100,
+  "first_tensile_crack": {
+    "displacement_m": 0.00010690235690235691,
+    "force_N": 599.3473823780012,
+    "x_m": 0.4625,
+    "z_m": -0.04761904761904762
+  },
+  "peak_force_N": 2847.8032137985156,
+  "peak_force_displacement_m": 0.005,
+  "plastic_collapse": {
+    "criterion": "not applied: the three-hinge limit is not calibrated for this support/fracture model",
+    "neutral_axis_depth_m": 0.01891891891891892,
+    "plastic_moment_Nm": 283.7837837837838,
+    "limit_load_N": null,
+    "event": null,
+    "post_failure": {
+      "model": "not applied",
+      "severed_interfaces": [],
+      "continuation_steps": 0,
+      "final_reaction_N": 2847.8032137985156,
+      "reaction_reached_zero": false
+    },
+    "assumptions": [
+      "plastic-collapse and central-severance criteria are disabled for this support/fracture model",
+      "damaged interfaces retain the specified effective stiffness ratio",
+      "no crack energy, inertia, or dynamic propagation is modeled"
+    ]
+  },
+  "axial_restraint_comparison": {
+    "alpha": 0.03,
+    "paper_initial_elastic_N_over_P": 1.0817307692307692,
+    "initial_numerical_N_over_P": 2.1658198645511995,
+    "maximum_numerical_N_over_P": 3.279672053050597,
+    "ratio_at_peak_load": 2.211746765988893,
+    "note": "The analytical value is an initial-elastic estimate; the reduced linear DEM, penalty restraints, and damage redistribution need not match it."
+  },
+  "post_crack_peak_force_N": 2847.8032137985156,
+  "final_broken_bonds": 360,
+  "final_softened_interfaces": 38,
+  "final_active_compression_contacts": 0,
+  "final_crushed_bonds": 0,
+  "max_compressive_bond_stress_Pa": 2263518.4091689903,
+  "compressive_strength_reached": false,
+  "sodhi_reference": {
+    "first_crack_force_Ff_N": 933.3333333333335,
+    "post_failure_force_at_beta_1_3_Fc_N": 2666.666666666667
+  },
+  "artifacts": [
+    "force_displacement.csv",
+    "force_displacement.svg",
+    "crack_state.svg",
+    "beam_animation.html"
+  ]
+}

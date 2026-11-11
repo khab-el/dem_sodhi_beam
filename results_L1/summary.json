@@ -12,7 +12,11 @@
     "max_displacement": 0.005,
     "steps": 100,
     "blocks": 41,
-    "fibers": 21
+    "fibers": 21,
+    "support_model": "clamped",
+    "end_eccentricity_ratio": 0.0,
+    "fracture_model": "brittle",
+    "post_crack_modulus_ratio": 0.1
   },
   "mesh": {
     "rigid_blocks": 41,
@@ -58,8 +62,10 @@
       "post-limit stress vectors are hidden because the dynamic release path is not modeled"
     ]
   },
+  "axial_restraint_comparison": null,
   "post_crack_peak_force_N": 2311.0097710839004,
   "final_broken_bonds": 72,
+  "final_softened_interfaces": 0,
   "final_active_compression_contacts": 8,
   "final_crushed_bonds": 16,
   "max_compressive_bond_stress_Pa": 3000000.0,
