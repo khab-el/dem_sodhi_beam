@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+<rect width="1200" height="760" fill="#ffffff"/>
+<style>
+  .title { font: 700 22px sans-serif; fill: #17212b; }
+  .label { font: 16px sans-serif; fill: #263746; }
+  .small { font: 14px sans-serif; fill: #425466; }
+  .math { font: italic 17px serif; fill: #17212b; }
+  .panel { fill: #fbfdff; stroke: #b8c7d4; stroke-width: 1.5; rx: 12; }
+  .blue { stroke: #1565c0; fill: none; }
+  .red { stroke: #d84315; fill: none; }
+  .teal { stroke: #008c95; fill: none; }
+</style>
+
+<text x="600" y="34" text-anchor="middle" class="title">Схема редуцированной DEM-модели ледяной балки</text>
+
+<rect x="30" y="55" width="1140" height="250" class="panel"/>
+<text x="55" y="88" class="title">1. Балка, заделки и знаки нормальных напряжений</text>
+<rect x="155" y="150" width="890" height="90" fill="#eaf3fa" stroke="#315d7a" stroke-width="2"/>
+<path d="M155 150 H1045 M155 240 H1045" stroke="#315d7a" stroke-width="2"/>
+<path d="M185 153 Q600 222 1015 153" stroke="#1565c0" stroke-width="3" fill="none"/>
+<path d="M185 236 Q600 170 1015 236" stroke="#d84315" stroke-width="3" fill="none"/>
+<text x="600" y="139" text-anchor="middle" class="small">верх: сжатие в пролёте (синий)</text>
+<text x="600" y="267" text-anchor="middle" class="small">низ: растяжение в пролёте (оранжевый)</text>
+<rect x="125" y="132" width="28" height="126" fill="#858e96" stroke="#42484e"/>
+<rect x="1047" y="132" width="28" height="126" fill="#858e96" stroke="#42484e"/>
+<path d="M125 144 l-18 12 M125 168 l-18 12 M125 192 l-18 12 M125 216 l-18 12 M125 240 l-18 12
+         M1075 144 l18 12 M1075 168 l18 12 M1075 192 l18 12 M1075 216 l18 12 M1075 240 l18 12"
+      stroke="#42484e" stroke-width="2"/>
+<line x1="600" y1="97" x2="600" y2="137" stroke="#c62828" stroke-width="4"/>
+<path d="M590 128 L600 145 L610 128 Z" fill="#c62828"/>
+<text x="616" y="112" class="label" fill="#c62828">v₂&lt;0</text>
+<path d="M162 148 Q178 130 194 148" stroke="#c62828" stroke-width="3" fill="none"/>
+<path d="M1006 148 Q1022 130 1038 148" stroke="#c62828" stroke-width="3" fill="none"/>
+<text x="167" y="125" class="small" fill="#c62828">у заделки возможна верхняя трещина</text>
+<text x="515" y="291" class="small">При защемлении у опор знак изгиба меняется: верх может растягиваться, низ — сжиматься.</text>
+
+<rect x="30" y="325" width="555" height="390" class="panel"/>
+<text x="55" y="360" class="title">2. Блоки и связи на интерфейсе</text>
+<text x="80" y="397" class="small">i</text>
+<text x="456" y="397" class="small">i+1</text>
+<rect x="100" y="410" width="105" height="230" fill="#d9eaf6" stroke="#315d7a" stroke-width="2"/>
+<rect x="430" y="410" width="105" height="230" fill="#d9eaf6" stroke="#315d7a" stroke-width="2"/>
+<line x1="105" y1="525" x2="530" y2="525" stroke="#718496" stroke-dasharray="6 5"/>
+<text x="70" y="531" class="small">z=0</text>
+<line x1="104" y1="430" x2="431" y2="430" stroke="#d84315" stroke-width="4"/>
+<line x1="104" y1="475" x2="431" y2="475" stroke="#d84315" stroke-width="4"/>
+<line x1="104" y1="520" x2="431" y2="520" stroke="#718496" stroke-width="3"/>
+<line x1="104" y1="565" x2="431" y2="565" stroke="#1565c0" stroke-width="4"/>
+<line x1="104" y1="610" x2="431" y2="610" stroke="#1565c0" stroke-width="4"/>
+<text x="218" y="422" class="small">продольные волоконные связи</text>
+<line x1="265" y1="500" x2="265" y2="549" stroke="#008c95" stroke-width="4"/>
+<path d="M253 505 L265 492 L277 505 M253 544 L265 557 L277 544" fill="none" stroke="#008c95" stroke-width="3"/>
+<text x="285" y="535" class="small">сдвиговая связь</text>
+<text x="95" y="668" class="math">qᵢ=(uᵢ,vᵢ,θᵢ),   qᵢ₊₁=(uᵢ₊₁,vᵢ₊₁,θᵢ₊₁)</text>
+<text x="95" y="695" class="small">На каждом интерфейсе: n_f волокон по высоте и 1 сдвиговая связь.</text>
+
+<rect x="605" y="325" width="565" height="390" class="panel"/>
+<text x="630" y="360" class="title">3. Закон одной продольной связи</text>
+<line x1="705" y1="440" x2="1048" y2="440" stroke="#607d8b" stroke-width="2"/>
+<circle cx="705" cy="440" r="8" fill="#315d7a"/>
+<circle cx="1048" cy="440" r="8" fill="#315d7a"/>
+<path d="M713 440 l18 -18 l18 36 l18 -36 l18 36 l18 -36 l18 36 l18 -36 l18 18"
+      stroke="#d84315" stroke-width="3" fill="none"/>
+<text x="710" y="410" class="small">сечение i</text>
+<text x="1005" y="410" class="small">сечение i+1</text>
+<text x="650" y="490" class="math">δᵢⱼ = uᵢ₊₁ − uᵢ + zⱼ(θᵢ − θᵢ₊₁)</text>
+<text x="650" y="525" class="math">A_b = w Δz,    k_b = E A_b / Δx</text>
+<text x="650" y="560" class="math">σᵢⱼ = k_b δᵢⱼ / A_b = E δᵢⱼ / Δx</text>
+<line x1="650" y1="580" x2="1125" y2="580" stroke="#d7e0e8"/>
+<text x="650" y="610" class="small" fill="#d84315">σ&gt;0: растяжение — упругая связь до σₜ, затем разрыв.</text>
+<text x="650" y="640" class="small" fill="#1565c0">σ&lt;0: сжатие — до −σc, затем пластическое плато.</text>
+<text x="650" y="670" class="small" fill="#008c95">Разорванная связь: растяжение не передаёт; при δ&lt;0 — контакт.</text>
+<text x="650" y="697" class="small">Схема условная: связи — дискретизация, а не физические волокна.</text>
+</svg>

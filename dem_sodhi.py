@@ -373,11 +373,20 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
             }
         )
         states: list[str] = []
+        stresses: list[float] = []
         for index in fiber_indices:
             if crushed[index]:
                 states.append("crushed_contact" if crush_contact_active[index] else "crushed_open")
+                stress = -parameters.compressive_strength if crush_contact_active[index] else 0.0
             elif tensile_failed[index]:
                 states.append("compression_contact" if contact_active[index] else "open_crack")
+                stress = (
+                    springs[index].stiffness
+                    * extension(springs[index], displacement)
+                    / springs[index].area
+                    if contact_active[index]
+                    else 0.0
+                )
             else:
                 bond_stress = springs[index].stiffness * extension(springs[index], displacement) / springs[index].area
                 states.append(
@@ -387,7 +396,9 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                     if bond_stress > 1e-6
                     else "neutral"
                 )
-        frames.append({"displacement": displacement[:], "states": states})
+                stress = bond_stress
+            stresses.append(stress)
+        frames.append({"displacement": displacement[:], "states": states, "stresses": stresses})
 
     csv_path = output_dir / "force_displacement.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as file:
@@ -576,6 +587,7 @@ def write_animation_html(
         {
             "displacement": frame["displacement"],
             "states": "".join(STATE_CODES[state] for state in frame["states"]),
+            "stresses": [round(stress) for stress in frame["stresses"]],
             "force": row["force_N"],
             "travel": row["displacement_m"],
             "step": row["step"],
@@ -632,6 +644,7 @@ input[type=range] {{ flex: 1; min-width: 180px; }}
 <span style="--c:#c62828">Открытая трещина</span>
 <span style="--c:#6a1b9a">Раздавлено, контакт</span>
 <span style="--c:#795548">Раздавлено, разомкнуто</span>
+<span>Стрелки: → растяжение · ← сжатие (длина пропорциональна |σx|)</span>
 </div>
 </main>
 <script>
@@ -646,6 +659,7 @@ const colors = {{
   t: "#d84315", c: "#1565c0", a: "#00a6a6",
   o: "#c62828", p: "#6a1b9a", x: "#795548", n: "#aeb7c2"
 }};
+const stressTensionColor = "#c62828", stressCompressionColor = "#0d47a1";
 const fills = {{
   t: "#f7b49e", c: "#a9c8ef", a: "#8bd9d5",
   o: "#ffe0dc", p: "#d6b7e7", x: "#d9c5b9", n: "#dceef8"
@@ -699,6 +713,36 @@ function draw(frameIndex) {{
         [halfWidth, zCenter+layerHeight/2], [halfWidth, zCenter-layerHeight/2]
       ].map(([localX, localZ]) => point(frame, block, localX, localZ).join(",")).join(" ");
       add("polygon", {{points:corners,fill:fills[state] || fills.n,stroke:"#ffffff","stroke-width":0.45}}, beam);
+    }}
+  }}
+  const stressVectors = add("g", {{"fill":"none","stroke-width":2.2,"stroke-linecap":"round"}});
+  add("defs", {{}}).innerHTML = `
+    <marker id="stressTensionArrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="${{stressTensionColor}}"/></marker>
+    <marker id="stressCompressionArrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="${{stressCompressionColor}}"/></marker>`;
+  const vectorBlockStride = Math.max(1, Math.ceil((data.blocks - 1) / 12));
+  const vectorLayerStride = Math.max(1, Math.ceil(fibersPerInterface / 6));
+  const tensionLimit = Math.max(...data.frames.flatMap(item=>item.stresses.filter(value=>value>0)), 1);
+  const compressionLimit = Math.max(...data.frames.flatMap(item=>item.stresses.filter(value=>value<0).map(value=>-value)), 1);
+  for (let block=0;block<data.blocks-1;block+=vectorBlockStride) {{
+    for (let layer=0;layer<fibersPerInterface;layer+=vectorLayerStride) {{
+      const index=block*fibersPerInterface+layer;
+      const stress=frame.stresses[index];
+      if (Math.abs(stress)<1) continue;
+      const state=frame.states[index];
+      if (state==="o" || state==="x") continue;
+      const fiber=data.fibers[index];
+      const anchor=point(frame,block,halfBlock,fiber.z);
+      const tensile=stress>0;
+      const limit=tensile?tensionLimit:compressionLimit;
+      const length=5+11*Math.min(1,Math.abs(stress)/limit);
+      const startX=tensile?anchor[0]-length/2:anchor[0]+length/2;
+      const endX=tensile?anchor[0]+length/2:anchor[0]-length/2;
+      const color=tensile?stressTensionColor:stressCompressionColor;
+      const vector=add("line", {{
+        x1:startX,y1:anchor[1],x2:endX,y2:anchor[1],stroke:color,
+        "marker-end":tensile?"url(#stressTensionArrow)":"url(#stressCompressionArrow)"
+      }},stressVectors);
+      add("title",{{}},vector).textContent=`σx = ${{(stress/1e6).toFixed(3)}} MPa`;
     }}
   }}
   const cracks = add("g", {{"stroke-linecap":"round","fill":"none"}});

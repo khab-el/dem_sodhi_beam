@@ -44,7 +44,9 @@ The run writes:
 - `beam_animation.html` — interactive animation with play/pause, speed, and a
   step slider; the beam body follows the calculated block rotations and
   deflections, its colored layers show fiber tension/compression states, and
-  vertical markers show broken, contacting, or crushed bonds. The displayed
+  sparse arrows show the calculated longitudinal normal stress `sigma_x`
+  (right for tension, left for compression; length scales with magnitude).
+  Vertical markers show broken, contacting, or crushed bonds. The displayed
   deformation is magnified 4x; force and displacement readouts are actual.
   An adjacent force-displacement graph tracks the current animation step;
 - `summary.json` — parameters, first crack, peak loads, compressive stress, and
@@ -55,3 +57,7 @@ cracking and `Fc = 8 sigma_c w h^2/(9 L)` for Sodhi's post-failure formula at
 `beta = 1/3`. They are comparison values, not calibration targets. The
 simulation is an educational reduced-order DEM; validate mesh convergence and
 material/contact parameters before using predictions quantitatively.
+
+For the detailed derivation of the discrete spring laws, damage/contact
+transitions, assembled equilibrium equations, and load-step algorithm, see
+[MATHEMATICAL_MODEL.md](./MATHEMATICAL_MODEL.md).
