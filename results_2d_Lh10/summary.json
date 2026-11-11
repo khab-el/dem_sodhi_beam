@@ -1,0 +1,54 @@
+{
+  "model": "2D square-lattice bond DEM with axial, vertical, and diagonal links",
+  "parameters": {
+    "length": 1.0,
+    "height": 0.1,
+    "width": 0.1,
+    "youngs_modulus": 9000000000.0,
+    "tensile_strength": 700000.0,
+    "compressive_strength": 3000000.0,
+    "max_displacement": 0.005,
+    "steps": 100,
+    "layers": 11
+  },
+  "mesh": {
+    "nodes": 1111,
+    "bonds": 4110,
+    "nx": 101,
+    "nz": 11,
+    "dx_m": 0.01,
+    "dz_m": 0.01,
+    "punch_contact_nodes": 3,
+    "equivalent_lattice_poisson_ratio": 0.3333333333333333
+  },
+  "experimental_geometry_regime": {
+    "L_over_h": 10.0,
+    "regime": "long_beam",
+    "reported_pattern_for_comparison": "one central crack and two root cracks",
+    "pattern_is_not_prescribed": true
+  },
+  "first_bond_failure": {
+    "step": 13,
+    "displacement_m": 7.222222222222223e-05,
+    "force_N": 1129.4287131453505,
+    "x_m": 0.995,
+    "z_m": 0.05,
+    "bond_angle_deg": 0.0,
+    "failure_mode": "tension"
+  },
+  "peak_force_N": 1627.0691481494289,
+  "peak_force_displacement_m": 0.0002611111111111111,
+  "load_capacity_cutoff_fraction": 0.01,
+  "load_capacity_cutoff_N": 16.27069148149429,
+  "final_failed_tensile_bonds": 176,
+  "final_failed_compressive_bonds": 12,
+  "termination_reason": "loss_of_load_capacity_after_bond_failure",
+  "actual_steps": 61,
+  "artifacts": [
+    "force_displacement.csv",
+    "crack_network.csv",
+    "force_displacement.svg",
+    "crack_state.svg",
+    "beam_animation.html"
+  ]
+}

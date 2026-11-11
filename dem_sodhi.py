@@ -41,6 +41,7 @@ class Spring:
     x: float = 0.0
     is_fiber: bool = False
     is_support: bool = False
+    is_shear: bool = False
 
 
 def inner(first: list[float], second: list[float]) -> float:
@@ -116,6 +117,7 @@ def build_springs(parameters: Parameters) -> tuple[list[Spring], list[int], int,
                 (left + 1, left + 2, right + 1, right + 2),
                 (-1.0, -dx / 2.0, 1.0, -dx / 2.0),
                 shear_correction * shear_modulus * parameters.width * parameters.height / dx,
+                is_shear=True,
             )
         )
 
@@ -215,7 +217,7 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
         "eccentric_axial_restraint",
     ):
         raise ValueError(f"Unknown support model: {parameters.support_model}")
-    if parameters.fracture_model not in ("brittle", "effective_modulus"):
+    if parameters.fracture_model not in ("brittle", "effective_modulus", "mixed_mode"):
         raise ValueError(f"Unknown fracture model: {parameters.fracture_model}")
     if not 0.0 <= parameters.end_eccentricity_ratio:
         raise ValueError("End eccentricity ratio must be non-negative")
@@ -225,12 +227,18 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
     springs, fixed_dofs, punch_dof, dx = build_springs(parameters)
     dof_count = 3 * parameters.blocks
     fiber_indices = [i for i, spring in enumerate(springs) if spring.is_fiber]
+    shear_indices = {
+        spring.dofs[0] // 3: index
+        for index, spring in enumerate(springs)
+        if spring.is_shear
+    }
     free_dofs = [dof for dof in range(dof_count) if dof not in fixed_dofs and dof != punch_dof]
     free_map = {dof: index for index, dof in enumerate(free_dofs)}
     displacement = [0.0] * dof_count
     intact = [True] * len(springs)
     tensile_failed = [False] * len(springs)
     crushed = [False] * len(springs)
+    shear_assisted_failed = [False] * len(springs)
     catastrophic_failed = [False] * len(springs)
     softened_interfaces: set[int] = set()
     contact_active = [False] * len(springs)
@@ -283,6 +291,26 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
         ):
             return spring.stiffness * parameters.post_crack_modulus_ratio
         return spring.stiffness
+
+    def principal_tensile_stress(index: int, normal_stress: float) -> tuple[float, float]:
+        spring = springs[index]
+        interface = spring.dofs[0] // 3
+        shear_spring = springs[shear_indices[interface]]
+        shear_force = spring_stiffness(shear_indices[interface]) * extension(
+            shear_spring, displacement
+        )
+        section_area = parameters.width * parameters.height
+        depth_ratio = 2.0 * spring.z / parameters.height
+        shear_stress = (
+            1.5
+            * abs(shear_force)
+            / section_area
+            * max(0.0, 1.0 - depth_ratio**2)
+        )
+        principal_stress = 0.5 * normal_stress + math.sqrt(
+            (0.5 * normal_stress) ** 2 + shear_stress**2
+        )
+        return principal_stress, shear_stress
 
     def multiply(free_values: list[float]) -> list[float]:
         result = [stabilizer * value for value in free_values]
@@ -382,7 +410,13 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                     continue
                 if not intact[index]:
                     continue
-                if bond_stress > parameters.tensile_strength:
+                failure_stress = bond_stress
+                shear_stress = 0.0
+                if parameters.fracture_model == "mixed_mode":
+                    failure_stress, shear_stress = principal_tensile_stress(
+                        index, bond_stress
+                    )
+                if failure_stress > parameters.tensile_strength:
                     if first_crack is None:
                         pre_crack_force = 0.0
                         for active_index, active_spring in enumerate(springs):
@@ -399,6 +433,11 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                     intact[index] = False
                     tensile_failed[index] = True
                     contact_active[index] = False
+                    shear_assisted_failed[index] = (
+                        parameters.fracture_model == "mixed_mode"
+                        and bond_stress <= parameters.tensile_strength
+                        and shear_stress > 0.0
+                    )
                     if parameters.fracture_model == "effective_modulus":
                         softened_interfaces.add(spring.dofs[0] // 3)
                     broke_bond = True
@@ -408,6 +447,9 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                             "force_N": abs(pre_crack_force),
                             "x_m": spring.x,
                             "z_m": spring.z,
+                            "normal_stress_Pa": bond_stress,
+                            "shear_stress_Pa": shear_stress,
+                            "failure_stress_Pa": failure_stress,
                         }
                 elif bond_stress < -parameters.compressive_strength:
                     intact[index] = False
@@ -482,6 +524,9 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
                     step - int(collapse_event["step"]) if collapse_event is not None else 0
                 ),
                 "broken_bonds": sum(tensile_failed[index] for index in fiber_indices),
+                "shear_assisted_bonds": sum(
+                    shear_assisted_failed[index] for index in fiber_indices
+                ),
                 "crushed_bonds": sum(crushed[index] for index in fiber_indices),
                 "softened_interfaces": len(softened_interfaces),
                 "active_contacts": sum(
@@ -564,6 +609,23 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
         writer = csv.DictWriter(file, fieldnames=history[0].keys())
         writer.writeheader()
         writer.writerows(history)
+    crack_map_path = output_dir / "crack_map.csv"
+    with crack_map_path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=("x_m", "z_m", "shear_assisted"),
+        )
+        writer.writeheader()
+        for index in fiber_indices:
+            if tensile_failed[index]:
+                spring = springs[index]
+                writer.writerow(
+                    {
+                        "x_m": spring.x,
+                        "z_m": spring.z,
+                        "shear_assisted": shear_assisted_failed[index],
+                    }
+                )
 
     first_crack_force = (
         4.0
@@ -670,6 +732,9 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
         ),
         "post_crack_peak_force_N": max((float(row["force_N"]) for row in post_crack), default=0.0),
         "final_broken_bonds": int(history[-1]["broken_bonds"]),
+        "final_shear_assisted_bonds": sum(
+            shear_assisted_failed[index] for index in fiber_indices
+        ),
         "final_softened_interfaces": len(softened_interfaces),
         "final_active_compression_contacts": int(history[-1]["active_contacts"]),
         "final_crushed_bonds": sum(crushed[index] for index in fiber_indices),
@@ -679,8 +744,32 @@ def run_simulation(parameters: Parameters, output_dir: Path) -> dict[str, object
             "first_crack_force_Ff_N": first_crack_force,
             "post_failure_force_at_beta_1_3_Fc_N": sodhi_beta_one_third,
         },
+        "geometry_dependent_failure_scenario": {
+            "aspect_ratio_L_over_h": parameters.length / parameters.height,
+            "experimental_regime": (
+                "short_beam"
+                if parameters.length / parameters.height <= 4.0
+                else "long_beam"
+            ),
+            "reported_experimental_pattern": (
+                "two diagonal cracks (L/h <= 4)"
+                if parameters.length / parameters.height <= 4.0
+                else "one central crack and two root cracks (L/h > 4)"
+            ),
+            "model_criterion": (
+                "maximum principal tensile stress from discrete axial stress and "
+                "rectangular-section shear stress; no crack pattern is prescribed"
+                if parameters.fracture_model == "mixed_mode"
+                else "not active; the selected fracture model uses a normal-stress-only criterion"
+            ),
+            "shear_assisted_failed_bonds": sum(
+                shear_assisted_failed[index] for index in fiber_indices
+            ),
+            "crack_map_csv": crack_map_path.name,
+        },
         "artifacts": [
             csv_path.name,
+            crack_map_path.name,
             "force_displacement.svg",
             "crack_state.svg",
             "beam_animation.html",
@@ -1212,9 +1301,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--fracture-model",
-        choices=("brittle", "effective_modulus"),
+        choices=("brittle", "effective_modulus", "mixed_mode"),
         default="brittle",
-        help="Post-crack response model",
+        help="Fracture criterion and post-crack response model",
     )
     parser.add_argument(
         "--post-crack-modulus-ratio",

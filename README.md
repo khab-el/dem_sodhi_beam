@@ -52,6 +52,59 @@ kinematics; it does not reproduce the paper's full geometrically nonlinear
 equilibrium equations. The run summary reports numerical axial-restraint/
 punch-force ratios and compares them with the paper's initial elastic estimate.
 
+To let the geometry influence tensile failure through the local combination of
+axial and shear stress, select `--fracture-model mixed_mode`. The simulation
+does not prescribe crack locations; it applies a maximum-principal-tensile-
+stress threshold to the existing discrete bond grid. The summary labels
+`L/h <= 4` and `L/h > 4` regimes and reports the observed shear-assisted
+failures, so the two reported experimental patterns can be compared without
+hard-coding them. This is a reduced-order approximation: shear deformation is
+represented by one link per interface, so diagonal crack paths are only
+sampled at the grid's bond locations, not propagated as explicit surfaces.
+
+Example, using clamped ends as in the excerpt:
+
+```bash
+python3 dem_sodhi.py \
+  --length 0.3 --height 0.1 \
+  --support-model clamped \
+  --fracture-model mixed_mode \
+  --output results_short_mixed_mode
+```
+
+The excerpt also reports temperature and salinity dependence, but does not
+provide constitutive relationships for them. This implementation therefore
+does not infer material strengths from temperature or salinity; use measured
+`--tensile-strength`, `--compressive-strength`, and `--youngs-modulus` values
+for the relevant ice conditions.
+
+The beam-chain model above has no particles throughout the beam's length/depth
+plane, so it cannot resolve an actual diagonal crack surface. Use the separate
+2D lattice DEM for that geometry:
+
+```bash
+# Short beam: L/h = 3
+python3 dem_sodhi_2d.py --length 0.3 --height 0.1 --output results_2d_Lh3
+
+# Long beam: L/h = 10
+python3 dem_sodhi_2d.py --length 1.0 --height 0.1 --output results_2d_Lh10
+```
+
+This model uses horizontal, vertical, and diagonal springs, with fixed ends and
+displacement-controlled punch loading. It uses the same baseline `E`, tensile
+strength, and compressive strength; its central-force square lattice has
+effective `nu=1/3` (near the original `0.30`). It does not impose the reported
+crack patterns or include temperature/salinity laws or fracture-energy
+softening. Outputs include a plotted broken-bond network and bond-coordinate
+CSV, plus `beam_animation.html` with the deformed lattice, bond tension/
+compression state, the centered punch/loading point, and the force-displacement
+curve during loading. The calculation stops after bond damage reduces the
+punch reaction below 1% of its previous peak; this detects loss of practical
+load capacity even if a graph-connected bond path remains. The final frame is
+the last quasi-static equilibrium, not a dynamic collapse simulation. This is
+a geometry-capable comparison model, not a fully calibrated prediction of
+crack count or load.
+
 Default demonstration values are `L=1 m`, `h=w=0.1 m`, `E=9 GPa`,
 `nu=0.30`, `sigma_t=0.7 MPa`, `sigma_c=3 MPa`, and 5 mm punch travel in 100
 quasi-static steps. The load schedule is refined near the estimated first
@@ -67,7 +120,10 @@ The run writes:
 
 - `force_displacement.csv` — punch reaction, displacement, axial-restraint
   reaction and ratio, broken/softened bonds, active compression contacts,
-  optional plastic-collapse threshold, and post-failure continuation index;
+  shear-assisted failures, optional plastic-collapse threshold, and
+  post-failure continuation index;
+- `crack_map.csv` — final failed-bond coordinates `(x,z)` and whether mixed-mode
+  shear contributed to their failure;
 - `force_displacement.svg` — load-displacement curve;
 - `crack_state.svg` — final bond state: tension, compression, crack-face
   compression contact, softened sections, open tensile cracks, and crushed
@@ -81,9 +137,13 @@ The run writes:
   Vertical markers show broken, contacting, or crushed bonds. The displayed
   deformation is magnified 4x; force and displacement readouts are actual.
   An adjacent force-displacement graph tracks the current animation step;
-- `summary.json` — parameters, first crack, force-peak values, optional
+- `summary.json` — parameters, first crack, aspect-ratio failure regime and
+  experimentally reported crack pattern for comparison, force-peak values, optional
   plastic-collapse event (only for clamped/brittle mode), restraint-force
   comparison for eccentric support, and analytical Sodhi reference loads.
+
+`dem_sodhi_2d.py` writes its own summary, force-displacement history, and 2D
+broken-bond map in the selected output directory.
 
 The reference loads are `Ff = 4 sigma_t w h^2/(3 L)` for first flexural
 cracking and `Fc = 8 sigma_c w h^2/(9 L)` for Sodhi's post-failure formula at
